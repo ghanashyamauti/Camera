@@ -5,54 +5,38 @@ import logging
 import math
 import socket
 import re
-import urllib.request
-import urllib.error
 import numpy as np
 from typing import Optional, Tuple
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-class CpPlusHttpGrabber:
+def is_host_reachable(url: str, timeout: float = 0.8) -> Tuple[bool, str, int]:
     """
-    Direct HTTP Digest grabber for CP PLUS / Dahua cameras.
-    Works natively over HTTP (Port 80) even when RTSP / Port 554 is blocked.
+    Fast pre-flight check to see if RTSP host & port are reachable.
+    Avoids OpenCV cv2.VideoCapture 30-second blocking freeze!
     """
-    def __init__(self, host: str, user: str, password: str):
-        self.host = host
-        self.user = user
-        self.password = password
-        self.base_url = f"http://{host}"
-        self.snapshot_url = f"http://{host}/cgi-bin/snapshot.cgi?channel=1"
-        self.opener = self._build_opener()
+    try:
+        # Match rtsp://[user:pass@]host[:port][/path]
+        match = re.search(r"rtsp://(?:[^@]+@)?([^:/]+)(?::(\d+))?", url)
+        if not match:
+            return False, "", 0
+        host = match.group(1)
+        port = int(match.group(2)) if match.group(2) else 554
 
-    def _build_opener(self):
-        password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
-        password_mgr.add_password(None, self.base_url, self.user, self.password)
-        auth_handler = urllib.request.HTTPDigestAuthHandler(password_mgr)
-        basic_handler = urllib.request.HTTPBasicAuthHandler(password_mgr)
-        return urllib.request.build_opener(auth_handler, basic_handler)
-
-    def grab_frame(self, timeout: float = 1.5) -> Optional[np.ndarray]:
-        try:
-            req = urllib.request.Request(self.snapshot_url)
-            with self.opener.open(req, timeout=timeout) as response:
-                img_bytes = response.read()
-                if img_bytes and len(img_bytes) > 100:
-                    arr = np.frombuffer(img_bytes, dtype=np.uint8)
-                    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-                    return frame
-        except Exception as e:
-            pass
-        return None
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True, host, port
+    except Exception:
+        return False, "", 0
 
 class CameraManager:
     def __init__(self):
         self.source = settings.CAMERA_SOURCE
         self.fallback = settings.FALLBACK_SOURCE
         self.cap: Optional[cv2.VideoCapture] = None
-        self.http_grabber: Optional[CpPlusHttpGrabber] = None
-        self.use_http_mode = False
         self.latest_raw_frame: Optional[np.ndarray] = None
         self.is_running = False
         self.is_connected = False
@@ -82,8 +66,6 @@ class CameraManager:
         with self.lock:
             self.source = new_source.strip()
             self._release_cap()
-            self.http_grabber = None
-            self.use_http_mode = False
             self.is_connected = False
             self.last_reconnect_attempt = 0.0
         logger.info(f"Switched camera source to: {self.source}")
@@ -96,21 +78,6 @@ class CameraManager:
                 pass
             self.cap = None
 
-    def _extract_credentials(self, url: str) -> Tuple[str, str, str, int]:
-        """Extracts user, password, host, port from RTSP/HTTP URL"""
-        user = settings.CAMERA_USER
-        password = settings.CAMERA_PASSWORD
-        host = settings.CAMERA_IP
-        port = settings.CAMERA_PORT
-
-        match = re.search(r"://(?:([^:]+):([^@]+)@)?([^:/]+)(?::(\d+))?", url)
-        if match:
-            if match.group(1): user = match.group(1)
-            if match.group(2): password = match.group(2)
-            if match.group(3): host = match.group(3)
-            if match.group(4): port = int(match.group(4))
-        return user, password, host, port
-
     def _connect_capture(self) -> bool:
         self._release_cap()
         src = self.source.strip()
@@ -118,7 +85,6 @@ class CameraManager:
         # Demo mode
         if src.lower() in ["demo", "synthetic", "test"]:
             self.is_connected = True
-            self.use_http_mode = False
             self.status_message = "Demo Simulation Active"
             return True
 
@@ -129,63 +95,80 @@ class CameraManager:
             self.cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
             if self.cap and self.cap.isOpened():
                 self.is_connected = True
-                self.use_http_mode = False
                 self.status_message = f"Webcam Device {dev_idx} Connected"
                 return True
             else:
                 self.status_message = f"Webcam Device {dev_idx} Failed"
                 return False
 
-        user, password, host, port = self._extract_credentials(src)
+        # RTSP stream: First do fast socket pre-flight check!
+        reachable, host, port = is_host_reachable(src, timeout=0.8)
+        if not reachable:
+            logger.warning(f"RTSP target host {host}:{port} is unreachable over current network.")
+            self.status_message = f"Camera unreachable at {host}:{port}. Connect to router Wi-Fi."
+            self.is_connected = False
+            return False
 
-        # 1. First attempt: OpenCV RTSP stream variants
+        # Host is reachable, now connect OpenCV safely
+        logger.info(f"Host {host}:{port} reachable. Opening RTSP stream...")
         import os
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
-        candidates = [
-            f"rtsp://{user}:{password}@{host}:{port}/cam/realmonitor?channel=1&subtype=1",
-            f"rtsp://{user}:{password}@{host}:{port}/cam/realmonitor?channel=1&subtype=0",
-            f"rtsp://{user}:{password}@{host}:{port}/live",
-            f"rtsp://{user}:{password}@{host}:{port}/onvif1"
-        ]
+        candidates = [src]
+        if "rtsp://" in src and src.count("@") > 1:
+            proto, rest = src.split("://", 1)
+            last_at_idx = rest.rfind("@")
+            if last_at_idx != -1:
+                user_pass = rest[:last_at_idx]
+                host_path = rest[last_at_idx + 1:]
+                if ":" in user_pass:
+                    u, p = user_pass.split(":", 1)
+                    encoded_p = p.replace("@", "%40")
+                    candidates.insert(0, f"{proto}://{u}:{encoded_p}@{host_path}")
+
+        # Add alternative stream path candidates if standard one fails
+        if "rtsp://" in src:
+            base_url = src.split("?")[0]
+            if "/" in base_url.replace("://", ""):
+                # Extract root url up to host:port
+                m = re.match(r"(rtsp://[^/]+)", src)
+                if m:
+                    root = m.group(1)
+                    alt_paths = [
+                        f"{root}/cam/realmonitor?channel=1&subtype=0",
+                        f"{root}/cam/realmonitor?channel=1&subtype=1",
+                        f"{root}/live",
+                        f"{root}/onvif1",
+                        f"{root}/Streaming/Channels/101"
+                    ]
+                    for ap in alt_paths:
+                        if ap not in candidates:
+                            candidates.append(ap)
 
         for candidate in candidates:
-            logger.info(f"Trying RTSP stream: {candidate}")
             cap = cv2.VideoCapture(candidate, cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             if cap.isOpened():
-                ret, test_frame = cap.read()
-                if ret and test_frame is not None:
-                    self.cap = cap
-                    self.is_connected = True
-                    self.use_http_mode = False
-                    self.status_message = "CP PLUS Camera Connected (RTSP)"
-                    logger.info(f"Stream opened successfully via RTSP: {candidate}")
-                    return True
-            try:
-                cap.release()
-            except Exception:
-                pass
+                self.cap = cap
+                self.is_connected = True
+                self.status_message = "CP PLUS Camera Connected"
+                logger.info(f"Stream opened successfully with: {candidate}")
+                return True
+            else:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
 
-        # 2. Second attempt: Native CP PLUS HTTP Digest Snapshot (Port 80)
-        # If the user can see the camera web page, this ALWAYS works!
-        logger.info(f"RTSP failed. Trying native CP PLUS HTTP Digest grabber on {host}:80...")
-        grabber = CpPlusHttpGrabber(host, user, password)
-        test_frame = grabber.grab_frame(timeout=1.5)
-        if test_frame is not None:
-            self.http_grabber = grabber
-            self.use_http_mode = True
-            self.is_connected = True
-            self.latest_raw_frame = test_frame
-            self.status_message = "CP PLUS Connected (HTTP Native Stream)"
-            logger.info("CP PLUS camera connected successfully via native HTTP stream!")
-            return True
-
-        self.status_message = f"Connecting to camera at {host}... Check Wi-Fi"
+        self.status_message = "RTSP Authentication Failed (Check password)"
         self.is_connected = False
         return False
 
     def _generate_synthetic_frame(self) -> np.ndarray:
+        """
+        Generates continuous test room scene with moving objects so the user
+        ALWAYS gets a live, interactive video feed without freezing.
+        """
         self.demo_tick += 1
         w, h = 960, 540
         frame = np.full((h, w, 3), (248, 250, 252), dtype=np.uint8)
@@ -209,7 +192,7 @@ class CameraManager:
         cv2.rectangle(frame, (680, 260), (800, 430), (100, 70, 50), 2)
         cv2.putText(frame, "chair", (710, 345), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
-        # Moving Person
+        # Moving Person / Package
         obj_x = int(340 + math.sin(self.demo_tick * 0.04) * 200)
         obj_y = int(270 + math.cos(self.demo_tick * 0.02) * 45)
         cv2.circle(frame, (obj_x + 40, obj_y - 30), 20, (190, 140, 80), -1)
@@ -217,12 +200,19 @@ class CameraManager:
         cv2.putText(frame, "person", (obj_x + 18, obj_y + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         # Status Banner at bottom
-        banner_text = f"STANDBY: {self.status_message}"
+        is_rtsp = self.source.startswith("rtsp://")
+        if is_rtsp and not self.is_connected:
+            banner_text = f"STANDBY: {self.status_message}"
+            color = (50, 50, 220)
+        else:
+            banner_text = "SIMULATION DEMO MODE - Draw boxes over the chair or car to test!"
+            color = (40, 150, 40)
+
         cv2.rectangle(frame, (10, h - 35), (w - 10, h - 10), (235, 240, 245), -1)
         cv2.rectangle(frame, (10, h - 35), (w - 10, h - 10), (200, 210, 220), 1)
-        cv2.putText(frame, banner_text, (20, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (60, 60, 210), 1, cv2.LINE_AA)
+        cv2.putText(frame, banner_text, (20, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
 
-        time.sleep(0.033)
+        time.sleep(0.033) # 30 FPS
         return frame
 
     def _capture_loop(self):
@@ -243,50 +233,36 @@ class CameraManager:
                     fps_timer = time.time()
                 continue
 
-            # Mode B: Native HTTP Digest Grabber (Port 80)
-            if self.use_http_mode and self.http_grabber:
-                frame = self.http_grabber.grab_frame(timeout=1.0)
-                if frame is not None:
-                    with self.lock:
-                        self.latest_raw_frame = frame
-                        self.is_connected = True
-                    fps_counter += 1
-                    if time.time() - fps_timer >= 1.0:
-                        self.fps = fps_counter / (time.time() - fps_timer)
-                        fps_counter = 0
-                        fps_timer = time.time()
-                    time.sleep(0.04) # ~25 FPS
-                    continue
-                else:
-                    self.is_connected = False
-                    self.use_http_mode = False
+            # Mode B: Hardware / RTSP / Webcam
+            if self.cap is None or not self.cap.isOpened():
+                now = time.time()
+                if now - self.last_reconnect_attempt > 3.0:
+                    self.last_reconnect_attempt = now
+                    self._connect_capture()
 
-            # Mode C: Hardware RTSP / Webcam
-            if self.cap is not None and self.cap.isOpened():
-                ret, frame = self.cap.read()
-                if ret and frame is not None:
-                    with self.lock:
-                        self.latest_raw_frame = frame
-                        self.is_connected = True
-                    fps_counter += 1
-                    if time.time() - fps_timer >= 1.0:
-                        self.fps = fps_counter / (time.time() - fps_timer)
-                        fps_counter = 0
-                        fps_timer = time.time()
-                    continue
-                else:
-                    self._release_cap()
-                    self.is_connected = False
+                # Always generate smooth standby frame while connecting so stream never drops!
+                frame = self._generate_synthetic_frame()
+                with self.lock:
+                    self.latest_raw_frame = frame
+                fps_counter += 1
+                if time.time() - fps_timer >= 1.0:
+                    self.fps = fps_counter / (time.time() - fps_timer)
+                    fps_counter = 0
+                    fps_timer = time.time()
+                continue
 
-            # Mode D: Reconnecting / Standby Feed
-            now = time.time()
-            if now - self.last_reconnect_attempt > 2.5:
-                self.last_reconnect_attempt = now
-                self._connect_capture()
+            # Mode C: Reading active camera hardware frame
+            ret, frame = self.cap.read()
+            if not ret or frame is None:
+                logger.warning("Frame read failed from camera. Reconnecting...")
+                self._release_cap()
+                self.is_connected = False
+                continue
 
-            frame = self._generate_synthetic_frame()
             with self.lock:
                 self.latest_raw_frame = frame
+                self.is_connected = True
+
             fps_counter += 1
             if time.time() - fps_timer >= 1.0:
                 self.fps = fps_counter / (time.time() - fps_timer)
