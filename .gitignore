@@ -1,0 +1,34 @@
+# Virtual Environment
+backend/venv/
+backend/.venv/
+venv/
+ENV/
+
+# Python cache & artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.pt
+backend/yolov8n.pt
+
+# Node & Frontend
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+.vite/
+
+# Storage & Snapshots
+backend/storage/snapshots/*.jpg
+backend/storage/*.db
+backend/storage/*.sqlite3
+
+# Environment variables
+# (Keep local configs private)
+backend/.env.local
+frontend/.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+*.log
