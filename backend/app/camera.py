@@ -3,11 +3,34 @@ import time
 import threading
 import logging
 import math
+import socket
+import re
 import numpy as np
 from typing import Optional, Tuple
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+def is_host_reachable(url: str, timeout: float = 0.8) -> Tuple[bool, str, int]:
+    """
+    Fast pre-flight check to see if RTSP host & port are reachable.
+    Avoids OpenCV cv2.VideoCapture 30-second blocking freeze!
+    """
+    try:
+        # Match rtsp://[user:pass@]host[:port][/path]
+        match = re.search(r"rtsp://(?:[^@]+@)?([^:/]+)(?::(\d+))?", url)
+        if not match:
+            return False, "", 0
+        host = match.group(1)
+        port = int(match.group(2)) if match.group(2) else 554
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        s.close()
+        return True, host, port
+    except Exception:
+        return False, "", 0
 
 class CameraManager:
     def __init__(self):
@@ -22,6 +45,7 @@ class CameraManager:
         self.thread: Optional[threading.Thread] = None
         self.last_reconnect_attempt = 0.0
         self.demo_tick = 0
+        self.status_message = "Initializing..."
 
     def start(self):
         if self.is_running:
@@ -40,10 +64,11 @@ class CameraManager:
 
     def set_source(self, new_source: str):
         with self.lock:
-            self.source = new_source
+            self.source = new_source.strip()
             self._release_cap()
             self.is_connected = False
-        logger.info(f"Switched camera source to: {new_source}")
+            self.last_reconnect_attempt = 0.0
+        logger.info(f"Switched camera source to: {self.source}")
 
     def _release_cap(self):
         if self.cap is not None:
@@ -57,110 +82,118 @@ class CameraManager:
         self._release_cap()
         src = self.source.strip()
 
-        # Demo mode check
+        # Demo mode
         if src.lower() in ["demo", "synthetic", "test"]:
             self.is_connected = True
+            self.status_message = "Demo Simulation Active"
             return True
 
-        # Webcam check
+        # Webcam
         if src.isdigit() or src.lower() == "webcam":
             dev_idx = 0 if src.lower() == "webcam" else int(src)
             logger.info(f"Opening webcam device {dev_idx}...")
             self.cap = cv2.VideoCapture(dev_idx, cv2.CAP_DSHOW)
-        else:
-            # RTSP or video file/stream
-            import os
-            os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+            if self.cap and self.cap.isOpened():
+                self.is_connected = True
+                self.status_message = f"Webcam Device {dev_idx} Connected"
+                return True
+            else:
+                self.status_message = f"Webcam Device {dev_idx} Failed"
+                return False
 
-            # Generate candidate URLs (handling @ in password like Admin@123)
-            candidates = [src]
-            if "rtsp://" in src and src.count("@") > 1:
-                # Password has '@' in it. Encode internal '@' as '%40'
-                # Format: rtsp://user:pass@host:port/path
-                proto, rest = src.split("://", 1)
-                last_at_idx = rest.rfind("@")
-                if last_at_idx != -1:
-                    user_pass = rest[:last_at_idx]
-                    host_path = rest[last_at_idx + 1:]
-                    if ":" in user_pass:
-                        u, p = user_pass.split(":", 1)
-                        encoded_p = p.replace("@", "%40")
-                        encoded_url = f"{proto}://{u}:{encoded_p}@{host_path}"
-                        candidates.insert(0, encoded_url)
-
-            # Try candidate RTSP URLs
-            for candidate in candidates:
-                logger.info(f"Trying RTSP stream: {candidate}")
-                cap = cv2.VideoCapture(candidate, cv2.CAP_FFMPEG)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                if cap.isOpened():
-                    self.cap = cap
-                    self.is_connected = True
-                    logger.info(f"Stream opened successfully with: {candidate}")
-                    return True
-                else:
-                    try:
-                        cap.release()
-                    except Exception:
-                        pass
-
-        if self.cap and self.cap.isOpened():
-            self.is_connected = True
-            logger.info(f"Stream opened successfully: {src}")
-            return True
-        else:
-            logger.warning(f"Could not open stream: {src}. Will retry.")
+        # RTSP stream: First do fast socket pre-flight check!
+        reachable, host, port = is_host_reachable(src, timeout=0.8)
+        if not reachable:
+            logger.warning(f"RTSP target host {host}:{port} is unreachable over current network.")
+            self.status_message = f"Camera unreachable at {host}:{port}. Connect to router Wi-Fi."
             self.is_connected = False
             return False
 
+        # Host is reachable, now connect OpenCV safely
+        logger.info(f"Host {host}:{port} reachable. Opening RTSP stream...")
+        import os
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+
+        candidates = [src]
+        if "rtsp://" in src and src.count("@") > 1:
+            proto, rest = src.split("://", 1)
+            last_at_idx = rest.rfind("@")
+            if last_at_idx != -1:
+                user_pass = rest[:last_at_idx]
+                host_path = rest[last_at_idx + 1:]
+                if ":" in user_pass:
+                    u, p = user_pass.split(":", 1)
+                    encoded_p = p.replace("@", "%40")
+                    candidates.insert(0, f"{proto}://{u}:{encoded_p}@{host_path}")
+
+        for candidate in candidates:
+            cap = cv2.VideoCapture(candidate, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            if cap.isOpened():
+                self.cap = cap
+                self.is_connected = True
+                self.status_message = "CP PLUS Camera Connected"
+                logger.info(f"Stream opened successfully with: {candidate}")
+                return True
+            else:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+
+        self.status_message = "RTSP Authentication Failed (Check password)"
+        self.is_connected = False
+        return False
+
     def _generate_synthetic_frame(self) -> np.ndarray:
         """
-        Generates a clean, simulated test room scene with objects (chair, car, person, box)
-        moving smoothly to test the Red/Green detection zone without needing hardware.
+        Generates continuous test room scene with moving objects so the user
+        ALWAYS gets a live, interactive video feed without freezing.
         """
         self.demo_tick += 1
         w, h = 960, 540
-        # Light minimalist clean room background
-        frame = np.full((h, w, 3), (245, 247, 250), dtype=np.uint8)
+        frame = np.full((h, w, 3), (248, 250, 252), dtype=np.uint8)
 
         # Draw grid floor
         for y in range(320, h, 25):
-            cv2.line(frame, (0, y), (w, y), (225, 230, 235), 1)
+            cv2.line(frame, (0, y), (w, y), (226, 232, 240), 1)
 
-        # Draw simulated window outside (showing a car)
-        cv2.rectangle(frame, (40, 40), (280, 220), (210, 225, 240), -1)
-        cv2.rectangle(frame, (40, 40), (280, 220), (180, 195, 210), 2)
-        cv2.putText(frame, "Window (Driveway)", (50, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 115, 130), 1)
+        # Window outside (driveway with moving car)
+        cv2.rectangle(frame, (40, 40), (280, 220), (220, 235, 250), -1)
+        cv2.rectangle(frame, (40, 40), (280, 220), (180, 200, 225), 2)
+        cv2.putText(frame, "Driveway Window", (50, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 120, 140), 1)
 
-        # Moving car outside window
+        # Moving car
         car_x = int(50 + (math.sin(self.demo_tick * 0.03) + 1) * 70)
-        cv2.rectangle(frame, (car_x, 120), (car_x + 90, 175), (50, 60, 200), -1)
+        cv2.rectangle(frame, (car_x, 120), (car_x + 95, 175), (55, 65, 210), -1)
         cv2.putText(frame, "car", (car_x + 10, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Stationary Chair in Room
-        cv2.rectangle(frame, (680, 260), (790, 420), (120, 80, 60), -1)
-        cv2.rectangle(frame, (680, 260), (790, 420), (90, 60, 40), 2)
-        cv2.putText(frame, "chair", (710, 340), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        # Stationary Chair
+        cv2.rectangle(frame, (680, 260), (800, 430), (130, 90, 70), -1)
+        cv2.rectangle(frame, (680, 260), (800, 430), (100, 70, 50), 2)
+        cv2.putText(frame, "chair", (710, 345), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
-        # Moving Object (e.g. Person / Package moving across the center)
-        obj_x = int(320 + math.sin(self.demo_tick * 0.04) * 220)
-        obj_y = int(270 + math.cos(self.demo_tick * 0.02) * 50)
-        cv2.circle(frame, (obj_x + 40, obj_y - 30), 20, (180, 130, 70), -1) # Head
-        cv2.rectangle(frame, (obj_x + 15, obj_y - 10), (obj_x + 65, obj_y + 80), (60, 120, 190), -1) # Body
+        # Moving Person / Package
+        obj_x = int(340 + math.sin(self.demo_tick * 0.04) * 200)
+        obj_y = int(270 + math.cos(self.demo_tick * 0.02) * 45)
+        cv2.circle(frame, (obj_x + 40, obj_y - 30), 20, (190, 140, 80), -1)
+        cv2.rectangle(frame, (obj_x + 15, obj_y - 10), (obj_x + 65, obj_y + 80), (60, 130, 200), -1)
         cv2.putText(frame, "person", (obj_x + 18, obj_y + 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Status text watermark on demo feed
-        cv2.putText(
-            frame,
-            "[DEMO SIMULATION MODE - Select CP PLUS Camera in Settings once connected]",
-            (20, h - 20),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (120, 120, 130),
-            1,
-            cv2.LINE_AA
-        )
-        time.sleep(0.033) # ~30 FPS
+        # Status Banner at bottom
+        is_rtsp = self.source.startswith("rtsp://")
+        if is_rtsp and not self.is_connected:
+            banner_text = f"STANDBY: {self.status_message}"
+            color = (50, 50, 220)
+        else:
+            banner_text = "SIMULATION DEMO MODE - Draw boxes over the chair or car to test!"
+            color = (40, 150, 40)
+
+        cv2.rectangle(frame, (10, h - 35), (w - 10, h - 10), (235, 240, 245), -1)
+        cv2.rectangle(frame, (10, h - 35), (w - 10, h - 10), (200, 210, 220), 1)
+        cv2.putText(frame, banner_text, (20, h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+
+        time.sleep(0.033) # 30 FPS
         return frame
 
     def _capture_loop(self):
@@ -168,7 +201,7 @@ class CameraManager:
         fps_timer = time.time()
 
         while self.is_running:
-            # Handle Demo / Synthetic Feed
+            # Mode A: Explicit Demo Source
             if self.source.lower() in ["demo", "synthetic", "test"]:
                 frame = self._generate_synthetic_frame()
                 with self.lock:
@@ -181,28 +214,30 @@ class CameraManager:
                     fps_timer = time.time()
                 continue
 
-            # Handle Hardware / RTSP / Webcam
+            # Mode B: Hardware / RTSP / Webcam
             if self.cap is None or not self.cap.isOpened():
                 now = time.time()
-                if now - self.last_reconnect_attempt > 4.0:
+                if now - self.last_reconnect_attempt > 3.0:
                     self.last_reconnect_attempt = now
-                    connected = self._connect_capture()
-                    if not connected and self.fallback == "demo":
-                        logger.info("RTSP camera offline, using synthetic demo frame temporarily.")
-                        frame = self._generate_synthetic_frame()
-                        with self.lock:
-                            self.latest_raw_frame = frame
-                else:
-                    time.sleep(0.1)
+                    self._connect_capture()
+
+                # Always generate smooth standby frame while connecting so stream never drops!
+                frame = self._generate_synthetic_frame()
+                with self.lock:
+                    self.latest_raw_frame = frame
+                fps_counter += 1
+                if time.time() - fps_timer >= 1.0:
+                    self.fps = fps_counter / (time.time() - fps_timer)
+                    fps_counter = 0
+                    fps_timer = time.time()
                 continue
 
-            # Read frame
+            # Mode C: Reading active camera hardware frame
             ret, frame = self.cap.read()
             if not ret or frame is None:
-                logger.warning("Frame read failed. Retrying connection...")
+                logger.warning("Frame read failed from camera. Reconnecting...")
                 self._release_cap()
                 self.is_connected = False
-                time.sleep(0.5)
                 continue
 
             with self.lock:

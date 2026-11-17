@@ -59,55 +59,57 @@ def generate_video_stream():
     import cv2
 
     while True:
-        ret, frame = camera_manager.get_latest_frame()
-        if not ret or frame is None:
-            time.sleep(0.03)
-            continue
+        try:
+            ret, frame = camera_manager.get_latest_frame()
+            if not ret or frame is None:
+                time.sleep(0.03)
+                continue
 
-        # Evaluate zones and get annotated frame
-        current_zones = [z for z in active_zones if z.get("active", True)]
-        eval_results, annotated_frame = detector.evaluate_zones(frame, current_zones)
+            # Evaluate zones and get annotated frame
+            current_zones = [z for z in active_zones if z.get("active", True)]
+            eval_results, annotated_frame = detector.evaluate_zones(frame, current_zones)
 
-        # Check for auto-snapshot events (when zone becomes occupied)
-        now = time.time()
-        for res in eval_results:
-            zid = res["id"]
-            prev_status = zone_states.get(zid, {}).get("status", "empty")
-            curr_status = res["status"]
+            # Check for auto-snapshot events (when zone becomes occupied)
+            now = time.time()
+            for res in eval_results:
+                zid = res["id"]
+                prev_status = zone_states.get(zid, {}).get("status", "empty")
+                curr_status = res["status"]
 
-            # Trigger snapshot if just transitioned from empty -> occupied, or cooldown expired
-            is_new_detection = (prev_status == "empty" and curr_status == "occupied")
-            cooldown_passed = (now - last_snapshot_time > settings.AUTO_SNAPSHOT_COOLDOWN)
+                is_new_detection = (prev_status == "empty" and curr_status == "occupied")
+                cooldown_passed = (now - last_snapshot_time > settings.AUTO_SNAPSHOT_COOLDOWN)
 
-            if curr_status == "occupied" and (is_new_detection or cooldown_passed):
-                labels = [o["label"] for o in res["detected_objects"]]
-                snapshot_file = storage_manager.save_snapshot(
-                    annotated_frame,
-                    zone_name=res["name"],
-                    status=curr_status,
-                    detected_labels=labels
-                )
-                storage_manager.log_event(
-                    zone_id=zid,
-                    zone_name=res["name"],
-                    status=curr_status,
-                    detected_objects=res["detected_objects"],
-                    snapshot_filename=snapshot_file
-                )
-                last_snapshot_time = now
-                logger.info(f"Auto snapshot captured: {snapshot_file} for {labels}")
+                if curr_status == "occupied" and (is_new_detection or cooldown_passed):
+                    labels = [o["label"] for o in res["detected_objects"]]
+                    snapshot_file = storage_manager.save_snapshot(
+                        annotated_frame,
+                        zone_name=res["name"],
+                        status=curr_status,
+                        detected_labels=labels
+                    )
+                    storage_manager.log_event(
+                        zone_id=zid,
+                        zone_name=res["name"],
+                        status=curr_status,
+                        detected_objects=res["detected_objects"],
+                        snapshot_filename=snapshot_file
+                    )
+                    last_snapshot_time = now
 
-            zone_states[zid] = res
+                zone_states[zid] = res
 
-        # Encode to JPEG
-        success, jpeg_buffer = cv2.imencode(".jpg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
-        if not success:
-            continue
+            # Encode to JPEG
+            success, jpeg_buffer = cv2.imencode(".jpg", annotated_frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if not success:
+                time.sleep(0.02)
+                continue
 
-        frame_bytes = jpeg_buffer.tobytes()
-        yield (b"--frame\r\n"
-               b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
-        time.sleep(0.03) # ~30 FPS
+            frame_bytes = jpeg_buffer.tobytes()
+            yield (b"--frame\r\n"
+                   b"Content-Type: image/jpeg\r\n\r\n" + frame_bytes + b"\r\n")
+            time.sleep(0.03) # ~30 FPS
+        except Exception as e:
+            time.sleep(0.05)
 
 @app.get("/api/stream")
 def video_stream():
