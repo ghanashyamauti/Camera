@@ -10,10 +10,17 @@ class Settings:
     BASE_DIR: Path = BASE_DIR
     HOST: str = os.getenv("HOST", "0.0.0.0")
     PORT: int = int(os.getenv("PORT", "8000"))
-    CAMERA_SOURCE: str = os.getenv(
-        "CAMERA_SOURCE",
-        "rtsp://admin:admin123@192.168.1.250:554/cam/realmonitor?channel=1&subtype=1"
-    )
+
+    # Camera settings from .env
+    CAMERA_IP: str = os.getenv("CAMERA_IP", "192.168.0.100")
+    CAMERA_PORT: int = int(os.getenv("CAMERA_PORT", "554"))
+    CAMERA_USER: str = os.getenv("CAMERA_USER", "admin")
+    CAMERA_PASSWORD: str = os.getenv("CAMERA_PASSWORD", "Admin123!")
+
+    # Default full RTSP source
+    DEFAULT_RTSP: str = f"rtsp://{CAMERA_USER}:{CAMERA_PASSWORD}@{CAMERA_IP}:{CAMERA_PORT}/cam/realmonitor?channel=1&subtype=1"
+    CAMERA_SOURCE: str = os.getenv("CAMERA_SOURCE", DEFAULT_RTSP)
+
     FALLBACK_SOURCE: str = os.getenv("FALLBACK_SOURCE", "demo")
     STORAGE_DIR: Path = BASE_DIR / os.getenv("STORAGE_DIR", "storage")
     SNAPSHOTS_DIR: Path = STORAGE_DIR / "snapshots"

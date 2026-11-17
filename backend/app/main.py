@@ -147,7 +147,10 @@ def get_camera_config():
         "source": camera_manager.source,
         "is_connected": camera_manager.is_connected,
         "confidence": detector.confidence_thresh,
-        "default_rtsp": settings.CAMERA_SOURCE
+        "default_rtsp": settings.CAMERA_SOURCE,
+        "camera_ip": settings.CAMERA_IP,
+        "camera_user": settings.CAMERA_USER,
+        "camera_password": settings.CAMERA_PASSWORD
     }
 
 @app.post("/api/camera/config")
@@ -248,7 +251,7 @@ def scan_network_for_camera():
         "status": "scan complete",
         "found_devices": found,
         "recommended_rtsp": [
-            f"rtsp://admin:admin123@{d['ip']}:554/cam/realmonitor?channel=1&subtype=1"
+            f"rtsp://{settings.CAMERA_USER}:{settings.CAMERA_PASSWORD}@{d['ip']}:554/cam/realmonitor?channel=1&subtype=1"
             for d in found if d["port"] in [554, 80]
         ]
     }
