@@ -1,18 +1,24 @@
 import React from 'react'
-import { Camera, Settings, Image as ImageIcon, Wifi, WifiOff, Activity } from 'lucide-react'
+import { Camera, Settings, Image as ImageIcon, Video, Laptop } from 'lucide-react'
 
-export default function Navbar({ status, onOpenSettings, onOpenSnapshots, snapshotCount }) {
+export default function Navbar({
+  status,
+  onOpenSettings,
+  onOpenSnapshots,
+  snapshotCount,
+  onToggleSource
+}) {
   const isConnected = status?.connected
   const fps = status?.fps || 0
   const source = status?.source || 'Loading...'
 
-  // Shorten source name for display
+  const isWebcam = source === '0' || source === 'webcam'
   const displaySource = source.startsWith('rtsp') 
-    ? 'CP PLUS RTSP' 
+    ? 'CP PLUS Camera' 
     : source === 'demo' 
-      ? 'Demo Mode' 
-      : source === '0' || source === 'webcam' 
-        ? 'Local Webcam' 
+      ? 'Auto-Connecting...' 
+      : isWebcam 
+        ? 'Laptop Webcam' 
         : source
 
   return (
@@ -40,7 +46,7 @@ export default function Navbar({ status, onOpenSettings, onOpenSnapshots, snapsh
           <div className="flex items-center gap-1.5 font-medium">
             <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'}`} />
             <span className={isConnected ? 'text-slate-800' : 'text-rose-600'}>
-              {isConnected ? 'Stream Active' : 'Offline'}
+              {isConnected ? 'Stream Active' : 'Auto-Searching...'}
             </span>
           </div>
           <span className="text-slate-300">|</span>
@@ -56,12 +62,26 @@ export default function Navbar({ status, onOpenSettings, onOpenSnapshots, snapsh
 
         {/* Right Action buttons */}
         <div className="flex items-center gap-2.5">
+          {/* Quick Webcam / CP PLUS Toggle */}
+          <button
+            onClick={onToggleSource}
+            title={isWebcam ? "Switch back to CP PLUS Camera" : "Instant fallback to Laptop Webcam"}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg transition-all shadow-xs ${
+              isWebcam
+                ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                : 'bg-slate-100 text-slate-700 hover:bg-slate-200/80 border border-slate-200'
+            }`}
+          >
+            {isWebcam ? <Video className="w-3.5 h-3.5" /> : <Laptop className="w-3.5 h-3.5 text-slate-600" />}
+            <span>{isWebcam ? 'Using Webcam (Click for CP PLUS)' : 'Use Webcam'}</span>
+          </button>
+
           <button
             onClick={onOpenSnapshots}
             className="flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-lg text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 active:bg-slate-100 transition-colors shadow-xs"
           >
             <ImageIcon className="w-4 h-4 text-slate-500" />
-            <span>Stored Captures</span>
+            <span>Captures</span>
             {snapshotCount > 0 && (
               <span className="px-1.5 py-0.2 rounded-full bg-slate-100 text-slate-700 text-[10px] font-semibold">
                 {snapshotCount}
@@ -74,7 +94,7 @@ export default function Navbar({ status, onOpenSettings, onOpenSnapshots, snapsh
             className="flex items-center gap-2 px-3.5 py-2 text-xs font-medium rounded-lg text-white bg-slate-900 hover:bg-slate-800 active:bg-black transition-colors shadow-xs"
           >
             <Settings className="w-4 h-4 text-slate-300" />
-            <span>Camera Settings</span>
+            <span>Settings</span>
           </button>
         </div>
 

@@ -173,6 +173,16 @@ export default function App() {
     }
   }
 
+  // Toggle between Webcam and CP PLUS
+  const handleToggleSource = async () => {
+    const current = status?.source || ''
+    const isWebcam = current === '0' || current === 'webcam'
+    const targetSource = isWebcam
+      ? (config?.default_rtsp || 'rtsp://admin:Admin123!@192.168.0.100:554/live/ch0')
+      : '0'
+    await handleSaveConfig({ source: targetSource, confidence: config?.confidence || 0.45 })
+  }
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800">
       
@@ -182,6 +192,7 @@ export default function App() {
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenSnapshots={() => setIsSnapshotsOpen(true)}
         snapshotCount={snapshots.length}
+        onToggleSource={handleToggleSource}
       />
 
       {/* Main Content Area */}
