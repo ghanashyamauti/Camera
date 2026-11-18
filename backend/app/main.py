@@ -137,18 +137,20 @@ app.add_middleware(
 
 
 def _stream_cached_jpegs(camera_id: str):
-    """Lightweight MJPEG generator: serves pre-annotated frames cached by CameraWorker (0 extra CPU per viewer)."""
+    """Zero-latency MJPEG generator: streams fresh pre-rendered frames instantly."""
+    last_sent = None
     while True:
         worker = camera_manager.get_worker(camera_id)
         if worker is None:
             break
         jpeg = worker.get_latest_jpeg()
-        if jpeg:
+        if jpeg and jpeg is not last_sent:
+            last_sent = jpeg
             yield (
                 b"--frame\r\n"
                 b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
             )
-        time.sleep(0.05)
+        time.sleep(0.025)  # 40 Hz polling for instant sub-50ms frame delivery
 
 
 # ─── Dynamic Camera CRUD & Auto-Detection ─────────────────────────────────────

@@ -128,42 +128,24 @@ class CameraWorker:
             self.cap = None
 
     def _open_stream(self) -> bool:
-        if not is_port_open(self.ip, self.port, timeout=0.8):
+        if not is_port_open(self.ip, self.port, timeout=1.8):
             self.status_message = f"Unreachable ({self.ip}:{self.port})"
             self.is_connected = False
             return False
 
         self.status_message = f"Connecting to {self.ip}..."
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp|stimeout;4000000"
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+            "rtsp_transport;tcp|"
+            "fflags;nobuffer|"
+            "flags;low_delay|"
+            "max_delay;0|"
+            "framedrop;1|"
+            "reorder_queue_size;0|"
+            "stimeout;5000000"
+        )
 
-        # 1. Try stored URL directly
-        try:
-            cap = cv2.VideoCapture(self.full_url, cv2.CAP_FFMPEG)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-            if cap.isOpened():
-                ret, frame = cap.read()
-                if ret and frame is not None and frame.size > 0:
-                    self.cap = cap
-                    self.is_connected = True
-                    self.status_message = "Live Stream Active"
-                    with self.lock:
-                        self.latest_raw_frame = frame
-                    logger.info(f"[{self.id}] Connected via {self.protocol.upper()}://{self.ip}:{self.port}")
-                    return True
-            cap.release()
-        except Exception as e:
-            logger.debug(f"[{self.id}] Direct open failed: {e}")
-
-        # 2. Fallback: re-run ONVIF/RTSP auto-detection in case camera settings or port changed
-        probe = auto_detect_camera(self.ip, self.username, self.password, preferred_subtype=self.subtype)
-        if probe.get("success"):
-            self.protocol = probe["protocol"]
-            self.port = probe["port"]
-            self.stream_path = probe["stream_path"]
-            if probe.get("manufacturer"):
-                self.manufacturer = probe["manufacturer"]
-            if probe.get("model"):
-                self.model = probe["model"]
+        # 1. Try stored URL directly (primary path)
+        for attempt in range(2):
             try:
                 cap = cv2.VideoCapture(self.full_url, cv2.CAP_FFMPEG)
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
@@ -175,12 +157,12 @@ class CameraWorker:
                         self.status_message = "Live Stream Active"
                         with self.lock:
                             self.latest_raw_frame = frame
-                        # Persist newly discovered path back to PostgreSQL
-                        self._sync_discovered_to_db()
+                        logger.info(f"[{self.id}] Connected via {self.protocol.upper()}://{self.ip}:{self.port}")
                         return True
                 cap.release()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"[{self.id}] Direct open attempt {attempt+1} failed: {e}")
+            time.sleep(0.5)
 
         self.status_message = f"Waiting for stream on {self.ip}..."
         self.is_connected = False
@@ -212,11 +194,13 @@ class CameraWorker:
     def _capture_loop(self):
         fps_counter = 0
         fps_timer = time.time()
+        consecutive_fails = 0
 
         while self.is_running:
             if self.cap is not None and self.cap.isOpened():
                 ret, frame = self.cap.read()
                 if ret and frame is not None and frame.size > 0:
+                    consecutive_fails = 0
                     with self.lock:
                         self.latest_raw_frame = frame
                         self.is_connected = True
@@ -228,13 +212,19 @@ class CameraWorker:
                         fps_timer = time.time()
                     continue
                 else:
+                    consecutive_fails += 1
+                    if consecutive_fails < 5:
+                        time.sleep(0.04)
+                        continue
+                    # 5 consecutive failed frame reads -> connection genuinely broken
                     self._release_cap()
                     self.is_connected = False
                     self.fps = 0.0
                     self.status_message = "Stream interrupted, reconnecting..."
+                    consecutive_fails = 0
 
             now = time.time()
-            if now - self.last_reconnect_attempt > 5.0:
+            if now - self.last_reconnect_attempt > 3.0:
                 self.last_reconnect_attempt = now
                 self._open_stream()
 

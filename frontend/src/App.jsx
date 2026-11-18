@@ -156,8 +156,16 @@ export default function App() {
 
       <main className="flex-1 max-w-[1720px] w-full mx-auto px-4 sm:px-6 py-5 space-y-4">
         {cameras.length > 0 ? (
-          /* 2 CAMERAS SIDE-BY-SIDE IN A ROW TOGETHER */
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+          /* RESPONSIVE CAMERAS ROW / GRID: 1, 2, 3 or more cameras side-by-side */
+          <div
+            className={`grid gap-5 items-start ${
+              cameras.length === 1
+                ? 'grid-cols-1 max-w-4xl mx-auto'
+                : cameras.length === 2
+                ? 'grid-cols-1 xl:grid-cols-2'
+                : 'grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3'
+            }`}
+          >
             {cameras.map((cam) => {
               const isSelected = cam.id === (selectedCameraId || cameras[0]?.id)
               return (
