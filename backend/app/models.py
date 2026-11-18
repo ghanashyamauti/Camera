@@ -4,33 +4,41 @@ from typing import List, Optional
 class ZoneModel(BaseModel):
     id: str
     name: str = "Zone 1"
-    # Normalized coordinates [0.0 - 1.0] relative to video width & height
-    x: float = Field(..., ge=0.0, le=1.0)
-    y: float = Field(..., ge=0.0, le=1.0)
-    width: float = Field(..., ge=0.0, le=1.0)
-    height: float = Field(..., ge=0.0, le=1.0)
+    shape: str = "rect"  # "rect" or "polygon"
+    x: float = Field(0.0, ge=0.0, le=1.0)
+    y: float = Field(0.0, ge=0.0, le=1.0)
+    width: float = Field(0.0, ge=0.0, le=1.0)
+    height: float = Field(0.0, ge=0.0, le=1.0)
+    points: Optional[List[List[float]]] = None
+    allowed_classes: List[str] = Field(default_factory=list)
     active: bool = True
 
-class DetectedObject(BaseModel):
-    label: str
-    confidence: float
-    bbox: List[float] # [x1, y1, x2, y2] normalized
-    in_zone: bool = False
+class CameraProbeRequest(BaseModel):
+    ip: str
+    username: str = "admin"
+    password: str
+    subtype: str = "1"
 
-class ZoneStatus(BaseModel):
-    id: str
-    name: str
-    occupied: bool
-    status: str # "occupied" or "empty"
-    detected_objects: List[DetectedObject] = []
-    x: float
-    y: float
-    width: float
-    height: float
+class CameraCreateRequest(BaseModel):
+    name: str = "Camera"
+    ip: str
+    username: str = "admin"
+    password: str
+    subtype: str = "1"
+    auto_detect: bool = True
+    port: Optional[int] = None
+    protocol: Optional[str] = None
+    stream_path: Optional[str] = None
 
-class CameraConfigRequest(BaseModel):
-    source: str # RTSP URL, or "webcam", or "demo"
-    confidence: Optional[float] = 0.45
+class CameraUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    ip: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    subtype: Optional[str] = None
+    enabled: Optional[bool] = None
+    re_detect: bool = False
 
 class ManualSnapshotRequest(BaseModel):
     note: Optional[str] = "Manual snapshot"
+    camera_id: Optional[str] = None

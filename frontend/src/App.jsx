@@ -1,54 +1,38 @@
 import React, { useState, useEffect, useCallback } from 'react'
+import { Plus, Video, CheckCircle2 } from 'lucide-react'
 import Navbar from './components/Navbar'
-import StatsCards from './components/StatsCards'
 import VideoZonePlayer from './components/VideoZonePlayer'
 import SnapshotsDrawer from './components/SnapshotsDrawer'
 import SettingsModal from './components/SettingsModal'
-import { Info, Wifi, Check, ExternalLink } from 'lucide-react'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export default function App() {
-  const [status, setStatus] = useState(null)
-  const [zones, setZones] = useState([])
+  const [cameras, setCameras] = useState([])
+  const [selectedCameraId, setSelectedCameraId] = useState(null)
   const [snapshots, setSnapshots] = useState([])
-  const [config, setConfig] = useState(null)
-  
-  // Modals state
+
   const [isSnapshotsOpen, setIsSnapshotsOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [isSnapshotting, setIsSnapshotting] = useState(false)
+  const [settingsTab, setSettingsTab] = useState('list')
+  const [snapshottingCameraId, setSnapshottingCameraId] = useState(null)
   const [isScanning, setIsScanning] = useState(false)
   const [scanResults, setScanResults] = useState(null)
-  const [showGuideBanner, setShowGuideBanner] = useState(true)
 
-  // Fetch system status
-  const fetchStatus = useCallback(async () => {
+  const fetchCameras = useCallback(async () => {
     try {
-      const res = await fetch(`${API_URL}/api/status`)
+      const res = await fetch(`${API_URL}/api/cameras`)
       if (res.ok) {
-        const data = await res.json()
-        setStatus(data)
+        const list = await res.json()
+        setCameras(list)
+        setSelectedCameraId(prev => {
+          if (prev && list.some(c => c.id === prev)) return prev
+          return list[0]?.id || null
+        })
       }
-    } catch (err) {
-      // Backend may be starting up
-    }
+    } catch (err) {}
   }, [])
 
-  // Fetch active zones
-  const fetchZones = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/zones`)
-      if (res.ok) {
-        const data = await res.json()
-        setZones(data)
-      }
-    } catch (err) {
-      console.error('Failed to fetch zones', err)
-    }
-  }, [])
-
-  // Fetch snapshots
   const fetchSnapshots = useCallback(async () => {
     try {
       const res = await fetch(`${API_URL}/api/snapshots`)
@@ -56,75 +40,99 @@ export default function App() {
         const data = await res.json()
         setSnapshots(data)
       }
-    } catch (err) {
-      console.error('Failed to fetch snapshots', err)
-    }
+    } catch (err) {}
   }, [])
 
-  // Fetch camera config
-  const fetchConfig = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_URL}/api/camera/config`)
-      if (res.ok) {
-        const data = await res.json()
-        setConfig(data)
-      }
-    } catch (err) {
-      console.error('Failed to fetch config', err)
-    }
-  }, [])
-
-  // Initial load
   useEffect(() => {
-    fetchStatus()
-    fetchZones()
+    fetchCameras()
     fetchSnapshots()
-    fetchConfig()
-
-    // Poll status every 800ms for real-time reactivity
-    const interval = setInterval(fetchStatus, 800)
+    const interval = setInterval(fetchCameras, 900)
     return () => clearInterval(interval)
-  }, [fetchStatus, fetchZones, fetchSnapshots, fetchConfig])
+  }, [fetchCameras, fetchSnapshots])
 
-  // Save new zone box
-  const handleSaveZones = async (newZones) => {
+  const handleSaveZones = async (cameraId, newZones) => {
     try {
-      const res = await fetch(`${API_URL}/api/zones`, {
+      const res = await fetch(`${API_URL}/api/cameras/${encodeURIComponent(cameraId)}/zones`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newZones)
       })
       if (res.ok) {
-        const data = await res.json()
-        setZones(data.zones)
-        fetchStatus()
+        await fetchCameras()
       }
-    } catch (err) {
-      console.error('Error updating zones:', err)
+    } catch (err) {}
+  }
+
+  const handleAddCamera = async (payload) => {
+    try {
+      const res = await fetch(`${API_URL}/api/cameras`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (res.ok) {
+        const data = await res.json()
+        await fetchCameras()
+        if (data?.camera?.id) {
+          setSelectedCameraId(data.camera.id)
+        }
+      }
+    } catch (err) {}
+  }
+
+  const handleUpdateCamera = async (cameraId, payload) => {
+    try {
+      const res = await fetch(`${API_URL}/api/cameras/${encodeURIComponent(cameraId)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      if (res.ok) {
+        await fetchCameras()
+      }
+    } catch (err) {}
+  }
+
+  const handleDeleteCamera = async (cameraId) => {
+    try {
+      const res = await fetch(`${API_URL}/api/cameras/${encodeURIComponent(cameraId)}`, {
+        method: 'DELETE'
+      })
+      if (res.ok) {
+        await fetchCameras()
+      }
+    } catch (err) {}
+  }
+
+  const handleScanNetwork = async () => {
+    setIsScanning(true)
+    try {
+      const res = await fetch(`${API_URL}/api/network/scan`, { method: 'POST' })
+      if (res.ok) {
+        setScanResults(await res.json())
+      }
+    } catch (err) {} finally {
+      setIsScanning(false)
     }
   }
 
-  // Trigger manual snapshot
-  const handleManualSnapshot = async () => {
-    setIsSnapshotting(true)
+  const handleManualSnapshot = async (cameraId) => {
+    setSnapshottingCameraId(cameraId)
     try {
       const res = await fetch(`${API_URL}/api/snapshot/manual`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ note: 'Manual trigger' })
+        body: JSON.stringify({ note: 'Manual trigger', camera_id: cameraId })
       })
       if (res.ok) {
         await fetchSnapshots()
         setIsSnapshotsOpen(true)
       }
-    } catch (err) {
-      console.error('Failed to take snapshot:', err)
-    } finally {
-      setIsSnapshotting(false)
+    } catch (err) {} finally {
+      setSnapshottingCameraId(null)
     }
   }
 
-  // Delete snapshot
   const handleDeleteSnapshot = async (filename) => {
     try {
       const res = await fetch(`${API_URL}/api/snapshots/${encodeURIComponent(filename)}`, {
@@ -133,127 +141,115 @@ export default function App() {
       if (res.ok) {
         setSnapshots(prev => prev.filter(s => s.filename !== filename))
       }
-    } catch (err) {
-      console.error('Failed to delete snapshot', err)
-    }
-  }
-
-  // Save camera settings
-  const handleSaveConfig = async (newConfig) => {
-    try {
-      const res = await fetch(`${API_URL}/api/camera/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newConfig)
-      })
-      if (res.ok) {
-        fetchConfig()
-        fetchStatus()
-      }
-    } catch (err) {
-      console.error('Error saving config:', err)
-    }
-  }
-
-  // Scan network for camera
-  const handleScanNetwork = async () => {
-    setIsScanning(true)
-    try {
-      const res = await fetch(`${API_URL}/api/network/scan`, {
-        method: 'POST'
-      })
-      if (res.ok) {
-        const data = await res.json()
-        setScanResults(data)
-      }
-    } catch (err) {
-      console.error('Scan failed:', err)
-    } finally {
-      setIsScanning(false)
-    }
-  }
-
-  // Toggle between Webcam and CP PLUS
-  const handleToggleSource = async () => {
-    const current = status?.source || ''
-    const isWebcam = current === '0' || current === 'webcam'
-    const targetSource = isWebcam
-      ? (config?.default_rtsp || 'rtsp://admin:Admin123!@192.168.0.100:554/live/ch0')
-      : '0'
-    await handleSaveConfig({ source: targetSource, confidence: config?.confidence || 0.45 })
+    } catch (err) {}
   }
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-800">
-      
-      {/* Top Navigation */}
       <Navbar
-        status={status}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        cameras={cameras}
+        onOpenSettings={() => { setSettingsTab('list'); setIsSettingsOpen(true) }}
+        onOpenAddCamera={() => { setSettingsTab('add'); setIsSettingsOpen(true) }}
         onOpenSnapshots={() => setIsSnapshotsOpen(true)}
         snapshotCount={snapshots.length}
-        onToggleSource={handleToggleSource}
       />
 
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
-        
-        {/* Hardware Quick-Guide Alert Banner */}
-        {showGuideBanner && (
-          <div className="mb-6 p-4 rounded-xl bg-white border border-slate-200/90 shadow-2xs flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-            <div className="flex items-start gap-3">
-              <div className="p-2 rounded-lg bg-emerald-50 text-emerald-600 shrink-0">
-                <Wifi className="w-4 h-4" />
-              </div>
-              <div className="text-xs">
-                <span className="font-semibold text-slate-900 block mb-0.5">
-                  CP PLUS & TP-Link Router Connection Guide
-                </span>
-                <p className="text-slate-500 leading-relaxed">
-                  1. Camera is powered by 12V. 
-                  2. To stream the camera directly, connect your PC to Wi-Fi <strong className="text-slate-700">TP-Link_B2B7</strong> (Password: <code className="bg-slate-100 px-1 py-0.5 rounded text-slate-800">17009690</code>).
-                  3. If you want to test right now before switching Wi-Fi, the system is in <strong className="text-slate-700">Demo Simulation Mode</strong> so you can draw boxes and see Green/Red detection instantly!
-                </p>
-              </div>
+      <main className="flex-1 max-w-[1720px] w-full mx-auto px-4 sm:px-6 py-5 space-y-4">
+        {cameras.length > 0 ? (
+          /* 2 CAMERAS SIDE-BY-SIDE IN A ROW TOGETHER */
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-5 items-start">
+            {cameras.map((cam) => {
+              const isSelected = cam.id === (selectedCameraId || cameras[0]?.id)
+              return (
+                <div
+                  key={cam.id}
+                  onClick={() => setSelectedCameraId(cam.id)}
+                  className={`bg-white rounded-2xl border transition-all duration-200 overflow-hidden ${
+                    isSelected
+                      ? 'border-emerald-500 ring-2 ring-emerald-500/30 shadow-lg'
+                      : 'border-slate-200 hover:border-slate-300 shadow-xs'
+                  }`}
+                >
+                  {/* Camera Header Banner */}
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3 bg-slate-50/70">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <span
+                        className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                          cam.connected ? 'bg-emerald-500 animate-pulse' : 'bg-rose-500'
+                        }`}
+                      />
+                      <span className="font-bold text-sm text-slate-900 truncate">{cam.name}</span>
+                      <span className="text-xs font-mono text-slate-400 bg-white border border-slate-200 px-2 py-0.5 rounded-md">
+                        {cam.ip}
+                      </span>
+                      {cam.connected && (
+                        <span className="text-xs font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                          {cam.fps} FPS
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                      {isSelected ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full bg-emerald-600 text-white shadow-2xs">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          <span>Selected</span>
+                        </span>
+                      ) : (
+                        <span className="text-[11px] font-medium text-slate-500 hover:text-slate-700 px-2 py-1 rounded-md bg-white border border-slate-200">
+                          Click to Select
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Complete Interactive Player for this camera */}
+                  <div className="p-4">
+                    <VideoZonePlayer
+                      camera={cam}
+                      streamUrl={`${API_URL}/api/cameras/${encodeURIComponent(cam.id)}/stream`}
+                      apiUrl={API_URL}
+                      liveZones={cam.zones || []}
+                      zones={cam.saved_zones || []}
+                      onSaveZones={(newZones) => handleSaveZones(cam.id, newZones)}
+                      onManualSnapshot={() => handleManualSnapshot(cam.id)}
+                      isSnapshotting={snapshottingCameraId === cam.id}
+                    />
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center space-y-4 max-w-lg mx-auto mt-8">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
+              <Video className="w-6 h-6" />
             </div>
-            <div className="flex items-center gap-2 shrink-0">
+            <div>
+              <h2 className="text-base font-bold text-slate-900">No Cameras Added Yet</h2>
+              <p className="text-xs text-slate-500 mt-1">
+                Enter your camera IP, username, and password — port, protocol, and stream URL are auto-detected and stored securely in PostgreSQL.
+              </p>
+            </div>
+            <div className="flex items-center justify-center gap-2.5 pt-1">
               <button
-                onClick={() => setIsSettingsOpen(true)}
-                className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200/80 rounded-lg transition-colors"
+                onClick={() => { setSettingsTab('add'); setIsSettingsOpen(true) }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm"
               >
-                Open Camera Setup
+                <Plus className="w-4 h-4" />
+                <span>Add First Camera</span>
               </button>
               <button
-                onClick={() => setShowGuideBanner(false)}
-                className="text-slate-400 hover:text-slate-600 text-xs px-2 py-1"
+                onClick={() => { setSettingsTab('list'); setIsSettingsOpen(true); handleScanNetwork() }}
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-800"
               >
-                Dismiss
+                <span>Scan Network</span>
               </button>
             </div>
           </div>
         )}
-
-        {/* Stats and Occupancy Status Cards */}
-        <StatsCards
-          status={status}
-          snapshotsCount={snapshots.length}
-          onOpenSnapshots={() => setIsSnapshotsOpen(true)}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-        />
-
-        {/* Interactive Video Feed & Zone Drawing Area */}
-        <VideoZonePlayer
-          streamUrl={`${API_URL}/api/stream`}
-          status={status}
-          zones={zones}
-          onSaveZones={handleSaveZones}
-          onManualSnapshot={handleManualSnapshot}
-          isSnapshotting={isSnapshotting}
-        />
-
       </main>
 
-      {/* Snapshots Sidebar / Drawer */}
       <SnapshotsDrawer
         isOpen={isSnapshotsOpen}
         onClose={() => setIsSnapshotsOpen(false)}
@@ -262,22 +258,19 @@ export default function App() {
         apiUrl={API_URL}
       />
 
-      {/* Camera & Settings Modal */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        config={config}
-        onSaveConfig={handleSaveConfig}
+        apiUrl={API_URL}
+        cameras={cameras}
+        initialTab={settingsTab}
+        onAddCamera={handleAddCamera}
+        onUpdateCamera={handleUpdateCamera}
+        onDeleteCamera={handleDeleteCamera}
         onScanNetwork={handleScanNetwork}
         isScanning={isScanning}
         scanResults={scanResults}
       />
-
-      {/* Footer */}
-      <footer className="border-t border-slate-200/80 bg-white/60 py-3.5 text-center text-xs text-slate-400">
-        <span>Camera Thing Detector • React + FastAPI + YOLOv8 • CP PLUS RTSP Stream Ready</span>
-      </footer>
-
     </div>
   )
 }

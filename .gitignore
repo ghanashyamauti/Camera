@@ -22,6 +22,9 @@ dist/
 backend/storage/snapshots/*.jpg
 backend/storage/*.db
 backend/storage/*.sqlite3
+backend/storage/zones.json
+backend/storage/events.json
+backend/storage/cameras.json
 
 # Environment variables
 # (Keep local configs private)
